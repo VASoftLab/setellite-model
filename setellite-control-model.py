@@ -1,6 +1,8 @@
 import numpy as np
 from scipy.integrate import solve_ivp
 import matplotlib.pyplot as plt
+import os
+import sys
 
 # Глобальные переменные
 mu = 3.986004418e14 # Гравитационный параметр Земли (м^3/с^2)
@@ -71,7 +73,7 @@ def satellite_model(t, X, U=None):
 
     return np.array([Vx, Vy, Vz, ax, ay, az])
 
-def propagate_orbit(X0, t_span, U=None, method='DOP853', rtol=1e-10, atol=1e-13):
+def propagate_orbit(X0, t_span, close_approaches=None, U=None, method='DOP853', rtol=1e-10, atol=1e-13):
     """
     Функция расчета орбиты спутника
 
@@ -89,10 +91,10 @@ def propagate_orbit(X0, t_span, U=None, method='DOP853', rtol=1e-10, atol=1e-13)
     """
 
     def satellite_dynamics(t, X):
-        if U is None:
+        if U is None or close_approaches is None:
             U_local = [0, 0, 0]
         else:
-            U_local = U(t)
+            U_local = U(t, close_approaches)
             # Нормировка управления
             norm_U = np.sqrt(U_local[0]**2 + U_local[1]**2 + U_local[2]**2)
             if norm_U > 0:
@@ -114,7 +116,7 @@ def propagate_orbit(X0, t_span, U=None, method='DOP853', rtol=1e-10, atol=1e-13)
 
     return sol
 
-def satellite_distance(pos_s1, pos_s2, critical_distance=None, print_info=False):
+def satellite_distance(pos_s1, pos_s2, critical_distance=None, t_span=None, print_info=False, file_name='approaches.txt'):
     """
     Функция вычисления евклидова расстояния между двумя спутниками
     
@@ -128,7 +130,7 @@ def satellite_distance(pos_s1, pos_s2, critical_distance=None, print_info=False)
     tuple: (distance, close_approaches)
         distance: array - расстояние между объектами
         close_approaches: list - список словарей с параметрами опасных сближений
-        Каждый словарь содержит:2
+        Каждый словарь содержит:
             - 'start_idx': int - индекс начала сближения
             - 'end_idx': int - индекс конца сближения
             - 'start_time': float - время начала сближения
@@ -140,13 +142,27 @@ def satellite_distance(pos_s1, pos_s2, critical_distance=None, print_info=False)
     x_s1, y_s1, z_s1 = pos_s1
     x_s2, y_s2, z_s2 = pos_s2
     
+    # TODO: Выполнить интерполяцию всей сетки измерений
+    # Проверяем размерности массивов
+    if len(x_s1) != len(x_s2):        
+        # Обрезаем до минимальной длины
+        min_len = min(len(x_s1), len(x_s2))
+        x_s1 = x_s1[:min_len]
+        y_s1 = y_s1[:min_len]
+        z_s1 = z_s1[:min_len]
+        x_s2 = x_s2[:min_len]
+        y_s2 = y_s2[:min_len]
+        z_s2 = z_s2[:min_len]
+        if t_span is not None:
+            t_span = t_span[:min_len]
+    
     distance = np.sqrt((x_s2 - x_s1)**2 + (y_s2 - y_s1)**2 + (z_s2 - z_s1)**2)
     
     # Словарь опасных сближений
     dangerous_approaches = []
     
     # Если задан порог, ищем опасные сближения
-    if critical_distance is not None:
+    if critical_distance is not None and t_span is not None:
         # Находим индексы, где расстояние меньше порога
         dangerous = distance < critical_distance
         
@@ -164,17 +180,16 @@ def satellite_distance(pos_s1, pos_s2, critical_distance=None, print_info=False)
                 if (start_idx == 0):
                     continue
                 
-                # Индексы конца интервала корректируем (diff добавлял 1)
-                end_idx = end_idx - 1
-                
                 # Находим минимальное расстояние на интервале
-                interval_distances = distance[start_idx:end_idx+1]
+                interval_distances = distance[start_idx:end_idx]
                 min_dist_idx_rel = np.argmin(interval_distances)
                 min_dist_idx = start_idx + min_dist_idx_rel
                 
                 dangerous_approaches.append({
                     'start_idx': start_idx,
                     'end_idx': end_idx,
+                    'start_time': t_span[start_idx], # Перевод в минуты
+                    'end_time': t_span[end_idx], # Перевод в минуты
                     'min_distance': interval_distances[min_dist_idx_rel],
                     'min_distance_idx': min_dist_idx,
                     'distances': interval_distances.copy()
@@ -187,11 +202,99 @@ def satellite_distance(pos_s1, pos_s2, critical_distance=None, print_info=False)
                 for i, approach in enumerate(dangerous_approaches):
                     print(f'Сближение {i+1}:')
                     print(f'\tМинимальное расстояние: {approach["min_distance"]:.2f} (км)')
-                    print(f'\tИнтервал: ({approach["start_idx"] / 60 * max_step:.2f} - {approach["end_idx"] / 60 * max_step:.2f}) (мин)')
+                    print(f'\tИнтервал: ({approach["start_time"] / 60:.2f} - {approach["end_time"] / 60:.2f}) (мин)')
                 print('##################################################')
+                # Сохраняем в файл
+                save_approaches_to_file(dangerous_approaches, file_name)
                 
     
     return distance, dangerous_approaches
+
+def save_approaches_to_file(approaches, filename):
+    """Построчное сохранение в текстовый файл"""
+    # Получаем путь к директории текущего скрипта
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    # Создаем полный путь к файлу
+    filepath = os.path.join(script_dir, filename)
+    
+    with open(filepath, 'w', encoding='utf-8') as file:
+        for i, approach in enumerate(approaches, 1):
+            file.write(f"Сближение #{i}\n")
+            file.write(f"start_idx: {approach['start_idx']}\n")
+            file.write(f"end_idx: {approach['end_idx']}\n")
+            file.write(f"start_time: {approach['start_time'] / 60:.2f}\n")
+            file.write(f"end_time: {approach['end_time'] / 60:.2f}\n")
+            file.write(f"min_distance: {approach['min_distance']:.2f}\n")
+            file.write(f"min_distance_idx: {approach['min_distance_idx']:.2f}\n")
+            file.write(f"distances: {approach['distances']}\n")
+            file.write("-" * 40 + "\n\n")
+            
+def collision_avoidance_controller(t, close_approaches):
+    """
+    Функция управления для предотвращения столкновений
+    Начинает маневр за X минут до опасного сближения
+    """
+    # Время упреждения - 30 минут (1800 секунд)
+    lead_time = 1800
+    
+    filename='controller.txt'
+    # Получаем путь к директории текущего скрипта
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    # Создаем полный путь к файлу
+    filepath = os.path.join(script_dir, filename)
+    
+    danger_time_start = 0.0
+    danger_time_end = 0.0
+    
+    # Если нет опасных сближений, возвращаем нулевое управление
+    if not close_approaches:
+        #with open(filepath, 'a', encoding='utf-8') as file:
+        #    file.write(f"{t:.2f}\t{danger_time_start:.2f}-{t:.2f}-{danger_time_end:.2f}\t[0.0, 0.0, 0.0]\n")
+        return [0.0, 0.0, 0.0]
+    
+    # Коэффициенты управления
+    u_x = 0
+    u_y = 1
+    u_z = 0
+    
+    # Проверяем каждое опасное сближение в базе
+    for approach in close_approaches:        
+        # Получаем интервал времени опасного сближения
+        if 'start_time' in approach and 'end_time' in approach:
+            danger_time_start = approach.get('start_time', float('inf'))
+            danger_time_end = approach.get('end_time', float('inf'))            
+            
+            #####################################################################
+            # Попали в участок сближения
+            #####################################################################
+            if danger_time_start - lead_time <= t <= danger_time_end + lead_time:
+                # Начало уклонения
+                if danger_time_start - lead_time <= t <= danger_time_start:
+                    #with open(filepath, 'a', encoding='utf-8') as file:
+                    #    file.write(f"{t:.2f}\t{danger_time_start:.2f}-{t:.2f}-{danger_time_end:.2f}\t[{u_x}, {u_y}, {u_z}]\tсход с орбиты\n")
+                    return [u_x, u_y, u_z]
+                
+                # Проходим опасный участок
+                if danger_time_start < t < danger_time_end:
+                    #with open(filepath, 'a', encoding='utf-8') as file:
+                    #    file.write(f"{t:.2f}\t{danger_time_start:.2f}-{t:.2f}-{danger_time_end:.2f}\t[0.0, 0.0, 0.0]\tпроход опасного участка\n")
+                    return [0.0, 0.0, 0.0]
+                
+                # Возврат на орбиту
+                if danger_time_end <= t <=  danger_time_end + lead_time:
+                    #with open(filepath, 'a', encoding='utf-8') as file:
+                    #    file.write(f"{t:.2f}\t{danger_time_start:.2f}-{t:.2f}-{danger_time_end:.2f}\t[{-u_x}, {-u_y}, {-u_z}]\tвозврат на орбиту\n")                
+                    return [-u_x, -u_y, -u_z]            
+                
+                break
+            #####################################################################
+    
+    danger_time_start = 0.0
+    danger_time_end = 0.0
+    # Вектор управления без коррекции
+    #with open(filepath, 'a', encoding='utf-8') as file:
+    #        file.write(f"{t:.2f}\t{danger_time_start:.2f}-{t:.2f}-{danger_time_end:.2f}\t[0.0, 0.0, 0.0]\n")
+    return [0, 0, 0]
 
 def plot_orbit_3d(sol_s1, sol_s2, show_earth=True):
     """
@@ -212,36 +315,47 @@ def plot_orbit_3d(sol_s1, sol_s2, show_earth=True):
     y_s2 = sol_s2.y[1] / 1000
     z_s2 = sol_s2.y[2] / 1000
     
-    # Дистанции
-    
     # Расстояния между спутниками    
     distance, close_approaches = satellite_distance(
         [x_s1, y_s1, z_s1],
-        [x_s2, y_s2, z_s2],
+        [x_s2, y_s2, z_s2],        
         critical_distance / 1000,
+        sol_s1.t,
         False
         )
     
     # Индексы критических состояний
     critical_indexses = distance <= critical_distance / 1000
-    # Критические координаты первого спутника
-    x_s1_critical = x_s1[critical_indexses]
-    y_s1_critical = y_s1[critical_indexses]
-    z_s1_critical = z_s1[critical_indexses]
     
-    x_s2_critical = x_s2[critical_indexses]
-    y_s2_critical = y_s2[critical_indexses]
-    z_s2_critical = z_s2[critical_indexses]
+    if len(x_s1) != len(distance):        
+        # Обрезаем до минимальной длины
+        min_len = min(len(x_s1), len(x_s2), len(distance))
+        x_s1 = x_s1[:min_len]
+        y_s1 = y_s1[:min_len]
+        z_s1 = z_s1[:min_len]
+        x_s2 = x_s2[:min_len]
+        y_s2 = y_s2[:min_len]
+        z_s2 = z_s2[:min_len]        
     
     # Строим орбиту 1-го спутника
     ax.plot(x_s1, y_s1, z_s1, 'b-', linewidth=2, label='Орбита 1-го спутника')
     # Строим орбиту 2-го спутника
     ax.plot(x_s2, y_s2, z_s2, 'g-', linewidth=2, label='Орбита 2-го спутника')
     
-    # Отмечаем критические точки 1-го спутника
-    ax.scatter([x_s1_critical], [y_s1_critical], [z_s1_critical], color='red', s=50, marker='o', alpha=0.1)
-    # Отмечаем критические точки 2-го спутника
-    ax.scatter([x_s2_critical], [y_s2_critical], [z_s2_critical], color='red', s=50, marker='o', alpha=0.1)
+    if (len(critical_indexses) > 0):
+        # Критические координаты первого спутника
+        x_s1_critical = x_s1[critical_indexses]
+        y_s1_critical = y_s1[critical_indexses]
+        z_s1_critical = z_s1[critical_indexses]
+        
+        x_s2_critical = x_s2[critical_indexses]
+        y_s2_critical = y_s2[critical_indexses]
+        z_s2_critical = z_s2[critical_indexses]
+        
+        # Отмечаем критические точки 1-го спутника
+        ax.scatter([x_s1_critical], [y_s1_critical], [z_s1_critical], color='red', s=50, marker='o', alpha=0.1)
+        # Отмечаем критические точки 2-го спутника
+        ax.scatter([x_s2_critical], [y_s2_critical], [z_s2_critical], color='red', s=50, marker='o', alpha=0.1)    
     
     # Добавляем Землю (сфера)
     if show_earth:
@@ -360,6 +474,14 @@ def plot_distance(t_span, distance, threshold=None):
     threshold: float - пороговое значение (опасная дистанция)
     """
     
+    # TODO: Выполнить интерполяцию всей сетки измерений
+    # Проверяем размерности массивов
+    if len(t_span) != len(distance):        
+        # Обрезаем до минимальной длины
+        min_len = min(len(t_span), len(distance))
+        t_span = t_span[:min_len]
+        distance = distance[:min_len]
+    
     # Создание фигуры
     fig, ax = plt.subplots(figsize=(10, 5))
     
@@ -390,6 +512,14 @@ def plot_distance(t_span, distance, threshold=None):
 
 
 if __name__ == "__main__":
+    
+    # Удаление лога управления
+    filename='controller.txt'    
+    script_dir = os.path.dirname(os.path.abspath(__file__))    
+    filepath = os.path.join(script_dir, filename)    
+    if os.path.exists(filepath):
+        os.remove(filepath)
+    
     # Начальные условия для круговой орбиты
     h = 800e3  # Высота орбиты (м)
     r0 = R + h  # Радиус орбиты относительно начала отсчета (м)
@@ -405,6 +535,7 @@ if __name__ == "__main__":
     # Собственное движение (без управления)
     sol_no_thrust_s1 = propagate_orbit(X0_s1, t_span)
     sol_no_thrust_s2 = propagate_orbit(X0_s2, t_span)
+    
     print('##################################################')
     print(f'РЕЗУЛЬТАТЫ МОДЕЛИРОВАНИЯ – СОБСТВЕННОЕ ДВИЖЕНИЕ')
     print('##################################################')
@@ -414,14 +545,17 @@ if __name__ == "__main__":
     print(f'Радиус орбиты: {r0/1000:.0f} (км)')
     print(f'Начальная скорость: {V0:.0f} (м/с)')
     print(f'Период обращения: {2*np.pi*np.sqrt(r0**3 / mu)/60:.1f} (мин)')
-    print(f'Время моделирования: {t_span[1]/60:.1f} (мин)')
+    print(f'Время моделирования: {t_span[1] / 60:.1f} (мин)')
+    
     # Расстояния между спутниками    
     distance, close_approaches = satellite_distance(
         [sol_no_thrust_s1.y[0] / 1000, sol_no_thrust_s1.y[1] / 1000, sol_no_thrust_s1.y[2] / 1000],
         [sol_no_thrust_s2.y[0] / 1000, sol_no_thrust_s2.y[1] / 1000, sol_no_thrust_s2.y[2] / 1000],
         critical_distance / 1000,
-        True
-        )
+        sol_no_thrust_s1.t,
+        True,
+        'approaches-no-control.txt'
+        )    
     
     # 3D орбита
     fig1 = plot_orbit_3d(sol_no_thrust_s1, sol_no_thrust_s2)
@@ -432,6 +566,47 @@ if __name__ == "__main__":
     
     t_span = sol_no_thrust_s1.t
     fig4 = plot_distance(t_span, distance, critical_distance / 1000)
+    
+    # Начальные условия
+    X0_s1 = np.array([r0, 0, 0, 0, V0, 0]) # 1-й спутник
+    X0_s2 = np.array([r0, 0, 0, 0, 0, V0]) # 2-й спутник
+    
+    # Временной интервал для модели (10 витков ~ 90000 сек для низкой орбиты)
+    t_span = (0, 10 * 2 * np.pi * np.sqrt(r0**3 / mu))
+    
+    # Первый спутник с управлением
+    sol_avoid_s1 = propagate_orbit(X0_s1, t_span,
+                                   close_approaches=close_approaches,
+                                   U=collision_avoidance_controller)
+    # Второй спутник без управления
+    sol_avoid_s2 = propagate_orbit(X0_s2, t_span, U=None)  # второй без управления    
+    
+    print('##################################################')
+    print(f'РЕЗУЛЬТАТЫ МОДЕЛИРОВАНИЯ – УПРАВЛЯЕМОЕ ДВИЖЕНИЕ')
+    print('##################################################')
+    print(f'Точек интегрирования (без упр.): {len(sol_avoid_s1.t)}')
+
+    print(f'Высота орбиты: {h/1000:.0f} (км)')
+    print(f'Радиус орбиты: {r0/1000:.0f} (км)')
+    print(f'Начальная скорость: {V0:.0f} (м/с)')
+    print(f'Период обращения: {2*np.pi*np.sqrt(r0**3 / mu)/60:.1f} (мин)')
+    print(f'Время моделирования: {t_span[1] / 60:.1f} (мин)')
+    
+    # Расстояния между спутниками    
+    distance_avoid, close_approaches_avoid = satellite_distance(
+        [sol_avoid_s1.y[0] / 1000, sol_avoid_s1.y[1] / 1000, sol_avoid_s1.y[2] / 1000],
+        [sol_avoid_s2.y[0] / 1000, sol_avoid_s2.y[1] / 1000, sol_avoid_s2.y[2] / 1000],
+        critical_distance / 1000,
+        sol_avoid_s1.t,
+        True,
+        'approaches-control.txt'
+        )
+    
+    fig5 = plot_orbit_3d(sol_avoid_s1, sol_avoid_s2)
+    fig6 = plot_orbit_projections(sol_avoid_s1)
+    
+    t_span_avoid = sol_avoid_s1.t
+    fig7 = plot_distance(t_span_avoid, distance_avoid, critical_distance / 1000)
     
     # Показываем все графики
     plt.show()
