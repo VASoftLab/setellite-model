@@ -18,9 +18,9 @@ aT = T/m
 c = 1.5*J2*mu*R**2
 
 # Критическая дистанция (м)
-critical_distance = 500000
+critical_distance = 400e3
 # Параметр решателя (с)
-max_step=10
+max_step=30
 
 
 def satellite_model(t, X, U=None):
@@ -232,69 +232,43 @@ def save_approaches_to_file(approaches, filename):
 def collision_avoidance_controller(t, close_approaches):
     """
     Функция управления для предотвращения столкновений
-    Начинает маневр за X минут до опасного сближения
     """
-    # Время упреждения - 30 минут (1800 секунд)
-    lead_time = 1800
+    lead_time = 1800  # 30 минут
+    u_x, u_y, u_z = 0, 1, 0  # тангенциальное направление
     
-    filename='controller.txt'
-    # Получаем путь к директории текущего скрипта
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    # Создаем полный путь к файлу
-    filepath = os.path.join(script_dir, filename)
-    
-    danger_time_start = 0.0
-    danger_time_end = 0.0
-    
-    # Если нет опасных сближений, возвращаем нулевое управление
     if not close_approaches:
-        #with open(filepath, 'a', encoding='utf-8') as file:
-        #    file.write(f"{t:.2f}\t{danger_time_start:.2f}-{t:.2f}-{danger_time_end:.2f}\t[0.0, 0.0, 0.0]\n")
         return [0.0, 0.0, 0.0]
     
-    # Коэффициенты управления
-    u_x = 0
-    u_y = 1
-    u_z = 0
-    
-    # Проверяем каждое опасное сближение в базе
-    for approach in close_approaches:        
-        # Получаем интервал времени опасного сближения
-        if 'start_time' in approach and 'end_time' in approach:
-            danger_time_start = approach.get('start_time', float('inf'))
-            danger_time_end = approach.get('end_time', float('inf'))            
+    # Проверяем все сближения
+    for approach in close_approaches:
+        if 'start_time' not in approach or 'end_time' not in approach:
+            continue
             
-            #####################################################################
-            # Попали в участок сближения
-            #####################################################################
-            if danger_time_start - lead_time <= t <= danger_time_end + lead_time:
-                # Начало уклонения
-                if danger_time_start - lead_time <= t <= danger_time_start:
-                    #with open(filepath, 'a', encoding='utf-8') as file:
-                    #    file.write(f"{t:.2f}\t{danger_time_start:.2f}-{t:.2f}-{danger_time_end:.2f}\t[{u_x}, {u_y}, {u_z}]\tсход с орбиты\n")
-                    return [u_x, u_y, u_z]
-                
-                # Проходим опасный участок
-                if danger_time_start < t < danger_time_end:
-                    #with open(filepath, 'a', encoding='utf-8') as file:
-                    #    file.write(f"{t:.2f}\t{danger_time_start:.2f}-{t:.2f}-{danger_time_end:.2f}\t[0.0, 0.0, 0.0]\tпроход опасного участка\n")
-                    return [0.0, 0.0, 0.0]
-                
-                # Возврат на орбиту
-                if danger_time_end <= t <=  danger_time_end + lead_time:
-                    #with open(filepath, 'a', encoding='utf-8') as file:
-                    #    file.write(f"{t:.2f}\t{danger_time_start:.2f}-{t:.2f}-{danger_time_end:.2f}\t[{-u_x}, {-u_y}, {-u_z}]\tвозврат на орбиту\n")                
-                    return [-u_x, -u_y, -u_z]            
-                
-                break
-            #####################################################################
+        danger_start = approach['start_time']
+        danger_end = approach['end_time']
+        
+        # Пропускаем прошедшие сближения
+        if t > danger_end + lead_time:
+            continue
+        
+        # Фаза уклонения (сход с орбиты)
+        if danger_start - lead_time <= t <= danger_start:
+            return [u_x, u_y, u_z]
+        
+        # Фаза возврата на орбиту
+        if danger_end <= t <= danger_end + lead_time:
+            return [-u_x, -u_y, -u_z]
+        
+        # Если мы внутри опасного интервала, двигатель выключен
+        if danger_start < t < danger_end:
+            return [0.0, 0.0, 0.0]
+        
+        # Если это ближайшее будущее сближение, но еще рано для маневра
+        if t < danger_start - lead_time:
+            # Ждем, двигатель выключен
+            return [0.0, 0.0, 0.0]
     
-    danger_time_start = 0.0
-    danger_time_end = 0.0
-    # Вектор управления без коррекции
-    #with open(filepath, 'a', encoding='utf-8') as file:
-    #        file.write(f"{t:.2f}\t{danger_time_start:.2f}-{t:.2f}-{danger_time_end:.2f}\t[0.0, 0.0, 0.0]\n")
-    return [0, 0, 0]
+    return [0.0, 0.0, 0.0]
 
 def plot_orbit_3d(sol_s1, sol_s2, show_earth=True):
     """
@@ -511,15 +485,7 @@ def plot_distance(t_span, distance, threshold=None):
     return fig
 
 
-if __name__ == "__main__":
-    
-    # Удаление лога управления
-    filename='controller.txt'    
-    script_dir = os.path.dirname(os.path.abspath(__file__))    
-    filepath = os.path.join(script_dir, filename)    
-    if os.path.exists(filepath):
-        os.remove(filepath)
-    
+if __name__ == "__main__":    
     # Начальные условия для круговой орбиты
     h = 800e3  # Высота орбиты (м)
     r0 = R + h  # Радиус орбиты относительно начала отсчета (м)
@@ -601,12 +567,11 @@ if __name__ == "__main__":
         True,
         'approaches-control.txt'
         )
-    
-    fig5 = plot_orbit_3d(sol_avoid_s1, sol_avoid_s2)
-    fig6 = plot_orbit_projections(sol_avoid_s1)
+        
+    fig5 = plot_orbit_projections(sol_avoid_s1)
     
     t_span_avoid = sol_avoid_s1.t
-    fig7 = plot_distance(t_span_avoid, distance_avoid, critical_distance / 1000)
+    fig6 = plot_distance(t_span_avoid, distance_avoid, critical_distance / 1000)
     
     # Показываем все графики
     plt.show()
